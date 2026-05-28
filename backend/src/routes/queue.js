@@ -73,8 +73,8 @@ const createQueueTokenWithRetry = async ({ patientId, doctorId, appointmentId, t
 };
 
 // GET /api/queue
-// List all active queue tokens
-router.get('/', authenticate, asyncHandler(async (req, res) => {
+// List all active queue tokens (PUBLIC - no authentication required)
+router.get('/', asyncHandler(async (req, res) => {
   const where = {};
   if (req.query.doctorId) where.doctorId = assertUuid(req.query.doctorId, 'doctorId');
   if (req.query.status) where.status = assertEnum(req.query.status, 'status', QUEUE_STATUSES);

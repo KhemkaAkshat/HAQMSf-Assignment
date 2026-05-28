@@ -285,68 +285,94 @@ DATABASE_URL="postgresql://user:password@localhost:5432/haqms?schema=public"
 - Artificial 350ms sleep between checking max and creating record
 - **Impact**: Duplicate tokens, queue confusion, patient calling errors
 
-**Reproduction:**
-1. Open two browser tabs logged in as receptionist
-2. Both go to Dashboard → "Active Direct Queue Check-In"
-3. Both select SAME patient and doctor
-4. Both click "Generate Live Token" simultaneously
-5. Expected: Token #1 and Token #2
-6. Actual: Both get Token #1 (DUPLICATE!)
+**Proof of Concept:**
+```
+Payload: Open two browser tabs logged in as receptionist
+Both select SAME patient and doctor
+Both click "Generate Live Token" simultaneously
+Expected: Token #1 and Token #2
+Actual: Both get Token #1 (DUPLICATE!)
+```
 
 **How We Solved It:**
-- [ ] PENDING: Use database transaction with pessimistic locking (SELECT FOR UPDATE)
-- [ ] PENDING: OR add database sequence/auto-increment for token generation
-- [ ] PENDING: Remove artificial setTimeout delay
-- [ ] PENDING: Add unique constraint on (doctorId, tokenNumber, date) in schema
+- [x] COMPLETED: Use database transaction with serializable isolation level
+- [x] COMPLETED: Add retry logic for transactional conflicts (P2002/P2034)
+- [x] COMPLETED: Remove artificial setTimeout delay
+- [x] COMPLETED: Add unique constraint on (doctorId, tokenNumber, tokenDate)
 
-**Solution Code** (When Implemented):
+**Solution Code** (Implemented):
 ```javascript
-// BEFORE (Lines 29-58):
-const maxTokenResult = await prisma.queueToken.aggregate({
-  where: { doctorId, createdAt: { gte: today } },
-  _max: { tokenNumber: true }
-});
-const nextTokenNumber = (maxTokenResult._max.tokenNumber || 0) + 1;
+// FIXED in queue.js:
+const createQueueTokenWithRetry = async ({ patientId, doctorId, appointmentId, tokenDate }) => {
+  const maxAttempts = 5;
 
-await new Promise((resolve) => setTimeout(resolve, 350)); // RACE WINDOW!
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const maxTokenResult = await tx.queueToken.aggregate({
+          where: { doctorId, tokenDate },
+          _max: { tokenNumber: true }
+        });
 
-const newToken = await prisma.queueToken.create({
-  data: { tokenNumber: nextTokenNumber, patientId, doctorId, ... }
-});
+        const nextTokenNumber = (maxTokenResult._max.tokenNumber || 0) + 1;
 
-// AFTER (Using Transaction):
-const newToken = await prisma.$transaction(async (tx) => {
-  const maxTokenResult = await tx.queueToken.aggregate({
-    where: { doctorId, createdAt: { gte: today } },
-    _max: { tokenNumber: true }
-  });
-  const nextTokenNumber = (maxTokenResult._max.tokenNumber || 0) + 1;
-
-  return tx.queueToken.create({
-    data: {
-      tokenNumber: nextTokenNumber,
-      patientId,
-      doctorId,
-      appointmentId: appointmentId || null,
-      status: 'WAITING'
+        return tx.queueToken.create({
+          data: {
+            tokenNumber: nextTokenNumber,
+            patientId,
+            doctorId,
+            appointmentId,
+            tokenDate,
+            status: 'WAITING'
+          },
+          include: tokenInclude
+        });
+      }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+      });
+    } catch (error) {
+      if (!isRetryableTokenConflict(error) || attempt === maxAttempts) {
+        throw error;
+      }
     }
-  });
+  }
+};
+
+// FIXED in POST /api/queue/checkin:
+const newToken = await createQueueTokenWithRetry({
+  patientId,
+  doctorId,
+  appointmentId,
+  tokenDate: today
 });
 ```
 
-**Schema Changes Needed:**
+**Schema Changes** (Implemented):
 ```prisma
-// In schema.prisma - Add unique constraint
 model QueueToken {
-  // ... existing fields ...
-  
-  // Add this constraint
-  @@unique([doctorId, tokenNumber, createdAt])
+  id            String      @id @default(uuid())
+  tokenNumber   Int
+  patientId     String
+  patient       Patient     @relation(fields: [patientId], references: [id])
+  doctorId      String
+  doctor        Doctor      @relation(fields: [doctorId], references: [id])
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  status        QueueStatus @default(WAITING)
+  tokenDate     DateTime    @db.Date  // NEW: Per-day token tracking
+  createdAt     DateTime    @default(now())
+
+  @@unique([doctorId, tokenNumber, tokenDate])  // NEW: Unique per doctor per day
+  @@index([doctorId, tokenDate])
+  @@index([doctorId, createdAt])
+  @@index([status])
+  @@index([patientId])
+  @@index([appointmentId])
 }
 ```
 
-**Verification**: ✅ / ❌  
-**Completion Date**: [To be filled]
+**Verification**: ✅ COMPLETED  
+**Completion Date**: May 29, 2026
 
 ---
 
@@ -442,7 +468,62 @@ npm start
 
 ## 🟠 HIGH PRIORITY ISSUES
 
-### ISSUE #8: Hardcoded API Base URL
+### ISSUE #8: Public Queue Display - Incorrect Authentication Requirement
+
+**What Was Found:**
+- GET `/api/queue` endpoint required authentication middleware but should be public
+- Location: `backend/src/routes/queue.js` line 78
+- Live Queue Monitor page couldn't fetch data: `Failed to retrieve active token queue`
+- Frontend makes unauthenticated fetch to display public waiting room board
+- **Impact**: Public queue display board inaccessible, feature completely broken
+
+**Error Message:**
+```
+GET http://localhost:5000/api/queue 401 Unauthorized
+Failed to retrieve active token queue. - Please verify that the backend API server is online.
+```
+
+**Reproduction:**
+1. Navigate to http://localhost:3000/queue (without login)
+2. See error: "Failed to retrieve active token queue"
+3. Check browser console: 401 Unauthorized on GET /api/queue
+
+**How We Solved It:**
+- [x] COMPLETED: Removed `authenticate` middleware from GET /api/queue route
+- [x] COMPLETED: Kept authentication on POST /api/queue/checkin (secure)
+- [x] COMPLETED: Made queue list publicly readable (like hospital waiting room)
+
+**Solution Code** (Implemented):
+```javascript
+// BEFORE (queue.js Line 78):
+router.get('/', authenticate, asyncHandler(async (req, res) => {
+  const where = {};
+  // ... rest of code
+}));
+
+// AFTER:
+router.get('/', asyncHandler(async (req, res) => {  // Removed authenticate
+  const where = {};
+  // ... rest of code
+}));
+
+// POST endpoint STILL requires authentication:
+router.post('/checkin', authenticate, asyncHandler(async (req, res) => {
+  // Only authenticated staff can check in patients
+}));
+```
+
+**Why This Is Correct:**
+- ✅ GET /queue: Public read-only display (like hospital monitor board)
+- ✅ POST /queue/checkin: Protected by authentication (only staff can create tokens)
+- ✅ PATCH /queue/:id: Protected by authentication (only staff can update)
+
+**Verification**: ✅ COMPLETED  
+**Completion Date**: May 29, 2026
+
+---
+
+### ISSUE #9: Hardcoded API Base URL
 
 **What Was Found:**
 - Backend API URL hardcoded in multiple frontend files
@@ -483,7 +564,7 @@ const { API_BASE_URL } = useAuth();
 
 ---
 
-### ISSUE #8: N+1 Database Query Problem
+### ISSUE #10: N+1 Database Query Problem
 
 **What Was Found:**
 - Appointments endpoint fetches core appointments, then loops fetching patient/doctor for each
@@ -558,7 +639,7 @@ res.json({
 
 ---
 
-### ISSUE #9: Sequential Async Operations (Doctor Stats)
+### ISSUE #11: Sequential Async Operations (Doctor Stats)
 
 **What Was Found:**
 - Doctor stats endpoint runs independent queries sequentially instead of parallel
@@ -597,7 +678,7 @@ const [totalDoctors, surgeonsCount, averageFee, highestExperience] = await Promi
 
 ---
 
-### ISSUE #10: Slow Report Endpoint (Nested Queries)
+### ISSUE #12: Slow Report Endpoint (Nested Queries)
 
 **What Was Found:**
 - Report endpoint loops through each doctor and runs 5+ queries per doctor
@@ -679,7 +760,7 @@ res.json({ success: true, timeTakenMs: durationMs, data: reportData });
 
 ---
 
-### ISSUE #11: In-Memory Pagination
+### ISSUE #13: In-Memory Pagination
 
 **What Was Found:**
 - Patient listing fetches ALL patients, filters in memory, paginates in memory
@@ -764,7 +845,7 @@ res.json({
 
 ---
 
-### ISSUE #12: Missing Double-Booking Prevention
+### ISSUE #14: Missing Double-Booking Prevention
 
 **What Was Found:**
 - Appointment schema lacks unique constraint on (doctorId, appointmentDate)
@@ -817,7 +898,7 @@ model Appointment {
 
 ---
 
-### ISSUE #13: Missing Database Indices
+### ISSUE #15: Missing Database Indices
 
 **What Was Found:**
 - No indices on frequently queried columns causing full table scans
@@ -866,7 +947,7 @@ model QueueToken {
 
 ---
 
-### ISSUE #14: Memory Leak in Queue Monitor
+### ISSUE #16: Memory Leak in Queue Monitor
 
 **What Was Found:**
 - setInterval created but never cleaned up when component unmounts
@@ -918,7 +999,7 @@ useEffect(() => {
 
 ---
 
-### ISSUE #15: Unnecessary Re-renders on Search
+### ISSUE #17: Unnecessary Re-renders on Search
 
 **What Was Found:**
 - Search input triggers full component re-render and API call on every keystroke
@@ -960,7 +1041,7 @@ useEffect(() => {
 
 ---
 
-### ISSUE #16: Missing Patient History Records Page
+### ISSUE #18: Missing Patient History Records Page
 
 **What Was Found:**
 - Route `/patients/[id]/history-records` doesn't exist
@@ -1087,7 +1168,7 @@ export default function PatientHistoryRecords() {
 | 2 | SQL Injection | 🔴 | [ ] | |
 | 3 | Authorization Bypass | 🔴 | [ ] | |
 | 4 | Weak JWT | 🔴 | [ ] | |
-| 5 | Token Race Condition | 🔴 | [ ] | |
+| 5 | Token Race Condition | 🔴 | [x] | May 29, 2026 |
 | 6 | Null Reference Crash | 🔴 | [ ] | |
 | 7 | Missing Migrations | 🔴 | [x] | May 28, 2026 |
 | 8 | Hardcoded API URL | 🟠 | [ ] | |
@@ -1108,12 +1189,12 @@ export default function PatientHistoryRecords() {
 **Total Issues**: 18  
 **Critical**: 7  
 **High**: 11  
-**Completed**: 1  
+**Completed**: 2  
 **In Progress**: 0  
-**Pending**: 17  
+**Pending**: 16  
 
-**Overall Progress**: 5.6% ✓  
-**Last Updated**: May 28, 2026
+**Overall Progress**: 11.1% ✓  
+**Last Updated**: May 29, 2026
 
 ---
 
