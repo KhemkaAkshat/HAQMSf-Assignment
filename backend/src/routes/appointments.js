@@ -7,6 +7,16 @@ const { APPOINTMENT_STATUSES, assertEnum, assertUuid, validateAppointment, valid
 const router = express.Router();
 const prisma = new PrismaClient();
 
+const appointmentSelect = {
+  id: true,
+  patientId: true,
+  doctorId: true,
+  appointmentDate: true,
+  reason: true,
+  status: true,
+  createdAt: true,
+};
+
 // GET /api/appointments
 // List all appointments
 // PERFORMANCE BUG: Classic N+1 Query Issue!
@@ -68,15 +78,24 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
     throw new AppError(409, 'Doctor already has an appointment at that time', 'APPOINTMENT_CONFLICT');
   }
 
-  const appointment = await prisma.appointment.create({
-    data: {
-      patientId,
-      doctorId,
-      appointmentDate,
-      reason,
-      status: 'PENDING',
-    },
-  });
+  let appointment;
+  try {
+    appointment = await prisma.appointment.create({
+      data: {
+        patientId,
+        doctorId,
+        appointmentDate,
+        reason,
+        status: 'PENDING',
+      },
+      select: appointmentSelect,
+    });
+  } catch (error) {
+    if (error.code === 'P2002') {
+      throw new AppError(409, 'Doctor already has an appointment at that time', 'APPOINTMENT_CONFLICT');
+    }
+    throw error;
+  }
 
   res.status(201).json({
     success: true,
@@ -94,9 +113,10 @@ router.patch('/:id', authenticate, asyncHandler(async (req, res) => {
   const updated = await prisma.appointment.update({
     where: { id },
     data: { status },
+    select: appointmentSelect,
   });
 
-  res.json(updated);
+  res.json({ success: true, appointment: updated });
 }));
 
 module.exports = router;

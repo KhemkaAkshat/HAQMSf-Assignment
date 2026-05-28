@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { 
   Users, CalendarDays, Activity, Search, Sparkles, UserPlus, 
   Trash2, ClipboardList, TrendingUp, DollarSign, Award, Clock,
-  ArrowRight, ShieldAlert, CheckCircle, Volume2
+  ArrowRight, CheckCircle, Volume2
 } from 'lucide-react';
 
 export default function Dashboard() {
@@ -24,7 +24,7 @@ export default function Dashboard() {
 
   // Global State
   const defaultTab = (
-    user?.role === 'ADMIN' ? 'reports' : user?.role === 'RECEPTIONIST' ? 'patients' : 'appointments'
+    user?.role === 'ADMIN' ? 'patients' : user?.role === 'RECEPTIONIST' ? 'patients' : 'appointments'
   );
   const [selectedTab, setActiveTab] = useState(null);
   const activeTab = selectedTab || defaultTab;
@@ -120,7 +120,7 @@ export default function Dashboard() {
         credentials: 'include'
       });
       const data = await res.json();
-      setDoctorsList(data);
+      setDoctorsList(Array.isArray(data) ? data : data.data || []);
     } catch (e) {
       console.error(e);
     }
@@ -292,7 +292,7 @@ export default function Dashboard() {
         credentials: 'include'
       });
       const queueData = await queueRes.json();
-      setDoctorQueue(queueData);
+      setDoctorQueue(Array.isArray(queueData) ? queueData : queueData.data || []);
 
     } catch (e) {
       console.error(e);
@@ -351,11 +351,10 @@ export default function Dashboard() {
   // ADMIN SYSTEM WORKFLOWS
   // ==========================================
   
-  // Slow report generator fetch
+  // Report generator fetch
   const generateSystemReport = async () => {
     setAdminReportLoading(true);
     try {
-      // Calls slow nested aggregation endpoint
       const res = await fetch(`${API_BASE_URL}/reports/doctor-stats`, {
         headers: { 'Authorization': `Bearer ${token}` },
         credentials: 'include'
@@ -371,7 +370,7 @@ export default function Dashboard() {
     }
   };
 
-  // Search Doctors (SQL Injection vulnerable API!)
+  // Search Doctors
   const searchPhysiciansAdmin = async () => {
     try {
       const params = new URLSearchParams({ search: adminSearchQuery });
@@ -382,6 +381,8 @@ export default function Dashboard() {
       const data = await res.json();
       if (Array.isArray(data)) {
         setDoctorsList(data);
+      } else if (Array.isArray(data.data)) {
+        setDoctorsList(data.data);
       } else {
         alert(`API Error: ${data.error || 'Unable to search physicians'}`);
       }
@@ -404,7 +405,7 @@ export default function Dashboard() {
                 onClick={() => setActiveTab('reports')}
                 className={`py-3.5 px-1 border-b-2 font-bold text-sm transition-all whitespace-nowrap ${activeTab === 'reports' ? 'border-teal-500 text-teal-600 dark:text-teal-400' : 'border-transparent text-slate-400'}`}
               >
-                System Audit Reports
+                Reports
               </button>
               <button
                 onClick={() => setActiveTab('physicians')}
@@ -1019,7 +1020,7 @@ export default function Dashboard() {
                     Doctor Revenue & Operations Report
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-1">
-                    System-wide practitioner performance audits. Computes completed bookings and potential sales.
+                    System-wide practitioner performance with completed bookings, queue volume, and revenue.
                   </p>
                 </div>
                 <button
@@ -1027,7 +1028,7 @@ export default function Dashboard() {
                   disabled={adminReportLoading}
                   className="glow-btn px-4 py-2 bg-teal-600 text-white font-extrabold text-xs rounded-lg shadow hover:bg-teal-700 disabled:opacity-50 transition-colors"
                 >
-                  {adminReportLoading ? 'Aggregating...' : 'Load Doctor System Audit Report'}
+                  {adminReportLoading ? 'Loading...' : 'Load Report'}
                 </button>
               </div>
 
@@ -1038,12 +1039,12 @@ export default function Dashboard() {
                     <div></div>
                   </div>
                   <p className="mt-4 text-xs font-semibold text-slate-400 animate-pulse">
-                    Executing sequential nested loop aggregates. Event loop is locked...
+                    Loading report metrics...
                   </p>
                 </div>
               ) : !adminReportData ? (
                 <div className="p-8 text-center bg-slate-100 dark:bg-slate-800/40 rounded-xl text-slate-400 text-xs font-semibold border border-dashed border-slate-200 dark:border-slate-700">
-                  Click the button above to load reports. Warning: Endpoint is extremely slow on larger doctor count tables!
+                  Click the button above to load the latest doctor operations report.
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -1053,7 +1054,7 @@ export default function Dashboard() {
                     <div>
                       <strong>Performance Diagnostic:</strong> API execution resolved in{' '}
                       <span className="font-bold text-amber-500">{adminReportData.timeTakenMs} ms</span>. 
-                      Sequential nested database calls loops reduce throughput. Optimization using Promise.all or single join aggregate is required.
+                      The backend now uses grouped aggregates for appointment and queue metrics.
                     </div>
                   </div>
 
@@ -1114,7 +1115,7 @@ export default function Dashboard() {
         )}
 
         {/* ==============================================================
-            TAB: PHYSICIAN REGISTRY (ADMIN ROLE - SQL INJECTION VULNERABILITY)
+            TAB: PHYSICIAN REGISTRY (ADMIN ROLE)
             ============================================================== */}
         {activeTab === 'physicians' && (
           <div className="glass p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-md space-y-6">
@@ -1146,18 +1147,14 @@ export default function Dashboard() {
                 onClick={searchPhysiciansAdmin}
                 className="glow-btn px-5 py-2 bg-slate-900 text-white dark:bg-teal-500 dark:text-slate-950 font-bold text-xs rounded-lg hover:bg-slate-800 dark:hover:bg-teal-400 transition-colors"
               >
-                Execute SQL Query
+                Search
               </button>
             </div>
 
-            <div className="p-3 bg-rose-500/10 text-rose-500 text-xs rounded-lg border border-rose-500/20 font-semibold leading-5 flex gap-3">
-              <ShieldAlert className="h-5 w-5 shrink-0" />
+            <div className="p-3 bg-teal-500/10 text-teal-600 dark:text-teal-400 text-xs rounded-lg border border-teal-500/20 font-semibold leading-5 flex gap-3">
+              <CheckCircle className="h-5 w-5 shrink-0" />
               <div>
-                <strong>SQL Vulnerability alert:</strong> This search executes raw interpolation: 
-                <code className="block bg-black/10 dark:bg-black/30 p-1.5 rounded mt-1 font-mono">
-                  SELECT * FROM &quot;Doctor&quot; WHERE name ILIKE &apos;%&#123;query&#125;%&apos;
-                </code>
-                Can be audited by inputting standard SQL injection strings to leak full user login lists.
+                <strong>Search is validated:</strong> Physician lookup uses API-side input validation and ORM filters.
               </div>
             </div>
 

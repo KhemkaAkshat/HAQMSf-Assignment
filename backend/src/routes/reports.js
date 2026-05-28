@@ -6,52 +6,74 @@ const { asyncHandler } = require('../utils/errors');
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// GET /api/reports/doctor-stats
-// Highly inefficient nested loop aggregate reporting for admin/receptionists dashboard
-// PERFORMANCE BUG: Performs multiple nested DB queries inside a loop for every doctor.
-// Runs sequentially, blocking/scaling terrible with doctors count.
 router.get('/doctor-stats', authenticate, authorize('ADMIN'), asyncHandler(async (req, res) => {
   const start = Date.now();
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const doctors = await prisma.doctor.findMany({
-    select: {
-      id: true,
-      name: true,
-      specialization: true,
-      department: true,
-      consultationFee: true,
-      appointments: {
-        select: {
-          status: true,
-        },
+  const [doctors, appointmentGroups, queueGroups] = await Promise.all([
+    prisma.doctor.findMany({
+      select: {
+        id: true,
+        name: true,
+        specialization: true,
+        department: true,
+        consultationFee: true,
       },
-      queueTokens: {
-        where: {
-          createdAt: { gte: today },
-        },
-        select: {
-          id: true,
-        },
+      orderBy: { name: 'asc' },
+    }),
+    prisma.appointment.groupBy({
+      by: ['doctorId', 'status'],
+      _count: {
+        _all: true,
       },
-    },
-  });
+    }),
+    prisma.queueToken.groupBy({
+      by: ['doctorId'],
+      where: {
+        tokenDate: today,
+      },
+      _count: {
+        _all: true,
+      },
+    }),
+  ]);
+
+  const statsByDoctor = new Map();
+  for (const group of appointmentGroups) {
+    const current = statsByDoctor.get(group.doctorId) || {
+      totalAppointments: 0,
+      completedAppointments: 0,
+      cancelledAppointments: 0,
+    };
+    const count = group._count._all;
+    current.totalAppointments += count;
+    if (group.status === 'COMPLETED') current.completedAppointments = count;
+    if (group.status === 'CANCELLED') current.cancelledAppointments = count;
+    statsByDoctor.set(group.doctorId, current);
+  }
+
+  const queueCountByDoctor = new Map(
+    queueGroups.map((group) => [group.doctorId, group._count._all])
+  );
 
   const reportData = doctors.map((doc) => {
-    const completedAppointments = doc.appointments.filter((appointment) => appointment.status === 'COMPLETED').length;
-    const cancelledAppointments = doc.appointments.filter((appointment) => appointment.status === 'CANCELLED').length;
+    const appointmentStats = statsByDoctor.get(doc.id) || {
+      totalAppointments: 0,
+      completedAppointments: 0,
+      cancelledAppointments: 0,
+    };
 
     return {
       id: doc.id,
       name: doc.name,
       specialization: doc.specialization,
       department: doc.department,
-      totalAppointments: doc.appointments.length,
-      completedAppointments,
-      cancelledAppointments,
-      todayQueueSize: doc.queueTokens.length,
-      revenue: completedAppointments * doc.consultationFee,
+      totalAppointments: appointmentStats.totalAppointments,
+      completedAppointments: appointmentStats.completedAppointments,
+      cancelledAppointments: appointmentStats.cancelledAppointments,
+      todayQueueSize: queueCountByDoctor.get(doc.id) || 0,
+      revenue: appointmentStats.completedAppointments * doc.consultationFee,
     };
   });
 

@@ -250,6 +250,8 @@ async function main() {
   tomorrow.setDate(tomorrow.getDate() + 1);
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
+  const queueTokenDate = new Date(today);
+  queueTokenDate.setHours(0, 0, 0, 0);
 
   const makeDateTime = (base, hour, minute = 0) => {
     const d = new Date(base);
@@ -375,6 +377,7 @@ async function main() {
         patientId: patients[0].id,
         doctorId: doctor1.id,
         appointmentId: appointments[0].id,
+        tokenDate: queueTokenDate,
         status: 'CALLING',
       },
     }),
@@ -384,6 +387,7 @@ async function main() {
         patientId: patients[1].id,
         doctorId: doctor1.id,
         appointmentId: appointments[1].id,
+        tokenDate: queueTokenDate,
         status: 'WAITING',
       },
     }),
@@ -392,6 +396,7 @@ async function main() {
         tokenNumber: 3,
         patientId: patients[6].id,
         doctorId: doctor1.id,
+        tokenDate: queueTokenDate,
         status: 'WAITING',
       },
     }),
@@ -401,6 +406,7 @@ async function main() {
         patientId: patients[2].id,
         doctorId: doctor2.id,
         appointmentId: appointments[2].id,
+        tokenDate: queueTokenDate,
         status: 'CALLING',
       },
     }),
@@ -409,6 +415,7 @@ async function main() {
         tokenNumber: 2,
         patientId: patients[8].id,
         doctorId: doctor2.id,
+        tokenDate: queueTokenDate,
         status: 'WAITING',
       },
     }),
@@ -418,6 +425,7 @@ async function main() {
         patientId: patients[7].id,
         doctorId: doctor3.id,
         appointmentId: appointments[5].id,
+        tokenDate: queueTokenDate,
         status: 'WAITING',
       },
     }),

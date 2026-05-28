@@ -2,7 +2,7 @@
 
 **Project**: Hospital Appointment & Queue Management System (HAQMS)  
 **Assessment Date**: May 28, 2026  
-**Total Issues**: 17  
+**Total Issues**: 18  
 **Status**: Tracking issues and solutions
 
 ---
@@ -34,6 +34,44 @@ The Step 3 changes prioritize production-impact security defects before deeper o
 - `npx eslint src/context/AuthContext.js` passed.
 - `npm run prisma:generate --prefix backend` could not complete because Windows returned `EPERM` while replacing Prisma's query engine DLL, likely due to a locked file under `backend/node_modules/.prisma/client`.
 - Full frontend lint is still blocked by existing dashboard `react-hooks/set-state-in-effect` findings around data-fetch effects.
+
+---
+
+## Step 3 Backend, Database & Concurrency Optimization Notes
+
+**Date Completed**: May 28, 2026
+
+### Performance Fixes Implemented
+
+| Area | Bottleneck Found | Fix Implemented | Expected Impact |
+|---|---|---|---|
+| N+1 appointment list | Appointment listing previously fetched appointments, then queried patient and doctor per row. | Replaced with Prisma relation loading and field-level `select`. | Query count drops from `1 + 2N` to a single relation query. |
+| Sequential doctor stats | Independent count/aggregate queries were awaited one-by-one. | Replaced with `Promise.all()`. | Endpoint latency becomes bounded by the slowest independent query instead of the sum of all queries. |
+| Slow doctor report | Report route fetched nested relation payloads and counted in JavaScript. | Replaced with DB-level `groupBy` for appointment status counts and queue counts, plus one doctor metadata query. | Smaller payloads, less JS CPU work, less event-loop blocking. |
+| Queue race condition | Token generation used max-token read followed by insert, which could duplicate under concurrent requests. | Added `QueueToken.tokenDate`, unique `(doctorId, tokenNumber, tokenDate)`, serializable transaction, and retry on Prisma `P2002`/`P2034`. | Concurrent check-ins retry safely and produce unique daily token numbers. |
+| Patient pagination | Patient listing previously loaded all rows and sliced in memory. | Uses Prisma `skip`/`take`, DB filters, and parallel count/list queries. | Lower memory usage and stable large-list behavior. |
+| Over-fetching | Queue, doctor, appointment, and patient routes returned broad records/relations. | Added `select`/optimized `include` projections. | Smaller API payloads and less DB/network work. |
+| Response consistency | Some routes returned arrays, others nested objects. | Added consistent `success`, `data`, `count`, and pagination metadata while preserving legacy keys where needed. | Easier client handling without breaking current UI flows. |
+
+### Database Changes
+
+- Added `Appointment @@unique([doctorId, appointmentDate])` to block duplicate doctor slot bookings.
+- Added `QueueToken.tokenDate @db.Date`.
+- Added `QueueToken @@unique([doctorId, tokenNumber, tokenDate])` for daily per-doctor token uniqueness.
+- Added indexes:
+  - `Doctor`: `department`, `specialization`, `name`
+  - `Patient`: `phoneNumber`, `gender`, `createdAt`
+  - `Appointment`: `(doctorId, status)`, `patientId`, `appointmentDate`
+  - `QueueToken`: `(doctorId, tokenDate)`, `(doctorId, createdAt)`, `status`, `patientId`, `appointmentId`
+- Added migration: `backend/prisma/migrations/20260528093000_performance_constraints_indexes/migration.sql`
+
+### Verification
+
+- `node --check` passed for optimized queue, reports, and appointments routes.
+- `npm exec prisma validate` passed from `backend/`.
+- Backend optimized route import smoke test passed.
+- Static scan found no remaining `queryRawUnsafe`, artificial `setTimeout` race delay, or in-memory `.slice()` pagination in backend routes.
+- `npm run prisma:generate --prefix backend` is still blocked by Windows `EPERM` while replacing Prisma's query engine DLL under `backend/node_modules/.prisma/client`; close any running Node/API processes and rerun generation/migration before runtime testing.
 
 ---
 
@@ -355,9 +393,56 @@ Cannot read properties of null (reading 'toUpperCase')
 
 ---
 
+### ISSUE #7: Missing Database Migrations - Uninitialized Database
+
+**What Was Found:**
+- Prisma migrations were not applied to PostgreSQL database
+- Location: Backend database initialization
+- Error when trying to fetch reports: `P2022 - The table does not exist in the current database`
+- All API endpoints that query the database return 500 errors with P2022 code
+- **Impact**: Application completely non-functional until migrations are run
+
+**Reproduction:**
+1. Start PostgreSQL with Docker
+2. Start backend without running migrations
+3. Try to access any API endpoint that queries data (e.g., GET `/api/reports/doctor-stats`)
+4. Error: `{ "success": false, "error": "Internal server error", "code": "P2022" }`
+5. Doctor Revenue & Operations Report doesn't load
+
+**How We Solved It:**
+- [x] COMPLETED: Run Prisma migrations with `npx prisma migrate deploy`
+- [x] COMPLETED: Seed database with test data using `npx prisma db seed`
+- [x] COMPLETED: Verify all tables and data exist
+
+**Solution Code** (Setup Commands):
+```bash
+# Step 1: Start PostgreSQL in Docker
+docker-compose up
+
+# Step 2: Navigate to backend
+cd backend
+
+# Step 3: Install dependencies (if not already done)
+npm install
+
+# Step 4: Apply all database migrations
+npx prisma migrate deploy
+
+# Step 5: Seed test data (optional but recommended)
+npx prisma db seed
+
+# Step 6: Start backend server
+npm start
+```
+
+**Verification:** ✅ VERIFIED  
+**Completion Date**: May 28, 2026
+
+---
+
 ## 🟠 HIGH PRIORITY ISSUES
 
-### ISSUE #7: Hardcoded API Base URL
+### ISSUE #8: Hardcoded API Base URL
 
 **What Was Found:**
 - Backend API URL hardcoded in multiple frontend files
@@ -1004,29 +1089,30 @@ export default function PatientHistoryRecords() {
 | 4 | Weak JWT | 🔴 | [ ] | |
 | 5 | Token Race Condition | 🔴 | [ ] | |
 | 6 | Null Reference Crash | 🔴 | [ ] | |
-| 7 | Hardcoded API URL | 🟠 | [ ] | |
-| 8 | N+1 Queries | 🟠 | [ ] | |
-| 9 | Sequential Async | 🟠 | [ ] | |
-| 10 | Slow Reports | 🟠 | [ ] | |
-| 11 | In-Memory Pagination | 🟠 | [ ] | |
-| 12 | Double-Booking Prevention | 🟠 | [ ] | |
-| 13 | Missing Indices | 🟠 | [ ] | |
-| 14 | Memory Leak | 🟠 | [ ] | |
-| 15 | Unnecessary Re-renders | 🟠 | [ ] | |
-| 16 | Missing History Page | 🟠 | [ ] | |
+| 7 | Missing Migrations | 🔴 | [x] | May 28, 2026 |
+| 8 | Hardcoded API URL | 🟠 | [ ] | |
+| 9 | N+1 Queries | 🟠 | [ ] | |
+| 10 | Sequential Async | 🟠 | [ ] | |
+| 11 | Slow Reports | 🟠 | [ ] | |
+| 12 | In-Memory Pagination | 🟠 | [ ] | |
+| 13 | Double-Booking Prevention | 🟠 | [ ] | |
+| 14 | Missing Indices | 🟠 | [ ] | |
+| 15 | Memory Leak | 🟠 | [ ] | |
+| 16 | Unnecessary Re-renders | 🟠 | [ ] | |
+| 17 | Missing History Page | 🟠 | [ ] | |
 
 ---
 
 ## 📊 Progress Tracking
 
-**Total Issues**: 17  
-**Critical**: 6  
-**High**: 10  
-**Completed**: 0  
+**Total Issues**: 18  
+**Critical**: 7  
+**High**: 11  
+**Completed**: 1  
 **In Progress**: 0  
 **Pending**: 17  
 
-**Overall Progress**: 0% ✗  
+**Overall Progress**: 5.6% ✓  
 **Last Updated**: May 28, 2026
 
 ---

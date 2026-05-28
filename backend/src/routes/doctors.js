@@ -47,7 +47,11 @@ router.get('/', authenticate, asyncHandler(async (req, res) => {
     orderBy: { name: 'asc' },
   });
 
-  res.json(doctors);
+  res.json({
+    success: true,
+    count: doctors.length,
+    data: doctors,
+  });
 }));
 
 // GET /api/doctors/stats

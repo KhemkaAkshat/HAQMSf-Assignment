@@ -24,7 +24,7 @@ export default function QueueMonitor() {
         throw new Error('Failed to retrieve active token queue.');
       }
       const data = await res.json();
-      setTokens(data);
+      setTokens(Array.isArray(data) ? data : data.data || []);
       setError('');
     } catch (err) {
       console.error('Queue poll fetch error:', err);

@@ -57,6 +57,7 @@ router.get('/', authenticate, asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
+    data: patients,
     patients,
     pagination: {
       page,
@@ -93,7 +94,7 @@ router.get('/:id', authenticate, asyncHandler(async (req, res) => {
     throw new AppError(404, 'Patient not found', 'PATIENT_NOT_FOUND');
   }
 
-  res.json(patient);
+  res.json({ success: true, data: patient, patient });
 }));
 
 // POST /api/patients (Register patient)
@@ -105,7 +106,7 @@ router.post('/', authenticate, asyncHandler(async (req, res) => {
     select: patientSelect,
   });
 
-  res.status(201).json(patient);
+  res.status(201).json({ success: true, data: patient, patient });
 }));
 
 router.patch('/:id', authenticate, asyncHandler(async (req, res) => {
@@ -118,7 +119,7 @@ router.patch('/:id', authenticate, asyncHandler(async (req, res) => {
     select: patientSelect,
   });
 
-  res.json(patient);
+  res.json({ success: true, data: patient, patient });
 }));
 
 // DELETE /api/patients/:id
