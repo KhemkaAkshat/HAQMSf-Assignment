@@ -11,19 +11,36 @@ const doctorRoutes = require('./routes/doctors');
 const appointmentRoutes = require('./routes/appointments');
 const queueRoutes = require('./routes/queue');
 const reportRoutes = require('./routes/reports');
+const { notFound, errorHandler } = require('./utils/errors');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Enable CORS for all origins (weak/broad CORS config)
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('CORS origin denied'));
+  },
+  credentials: true,
+}));
 
 // Body parser
 app.use(express.json());
 
 // Simple request logger
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  console.log('[REQUEST]', {
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    path: req.path,
+  });
   next();
 });
 
@@ -44,17 +61,8 @@ app.get('/', (req, res) => {
   });
 });
 
-// GLOBAL ERROR HANDLER
-// BUG: Improper error handling. It returns the raw error stack trace to the client,
-// which leaks details about database types, schema layout, and file paths.
-app.use((err, req, res, next) => {
-  console.error('[CRITICAL-ERROR]:', err);
-  res.status(500).json({
-    message: 'An unexpected internal server error occurred!',
-    error: err.message,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
-  });
-});
+app.use(notFound);
+app.use(errorHandler);
 
 // Listen on port
 app.listen(PORT, () => {
@@ -66,6 +74,7 @@ app.listen(PORT, () => {
 
 // Catch unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  // Intentionally do not exit process so candidates see unhandled promise logs
+  console.error('[UNHANDLED_REJECTION]', {
+    reason: reason && reason.message ? reason.message : reason,
+  });
 });

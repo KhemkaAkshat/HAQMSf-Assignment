@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import Navbar from '@/components/common/Navbar';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { 
   Users, CalendarDays, Activity, Search, Sparkles, UserPlus, 
   Trash2, ClipboardList, TrendingUp, DollarSign, Award, Clock,
@@ -11,20 +12,22 @@ import {
 } from 'lucide-react';
 
 export default function Dashboard() {
-  const { user, token, API_BASE_URL, logout } = useAuth();
+  const { user, token, loading, API_BASE_URL, logout } = useAuth();
   const router = useRouter();
 
   // Navigation Guard
   useEffect(() => {
-    if (!user) {
+    if (!loading && !user) {
       router.push('/login');
     }
-  }, [user]);
-
-  if (!user) return null;
+  }, [loading, router, user]);
 
   // Global State
-  const [activeTab, setActiveTab] = useState(user.role === 'ADMIN' ? 'reports' : user.role === 'RECEPTIONIST' ? 'patients' : 'appointments');
+  const defaultTab = (
+    user?.role === 'ADMIN' ? 'reports' : user?.role === 'RECEPTIONIST' ? 'patients' : 'appointments'
+  );
+  const [selectedTab, setActiveTab] = useState(null);
+  const activeTab = selectedTab || defaultTab;
 
   // ==========================================
   // STATE FOR RECEPTIONIST WORKFLOWS
@@ -76,8 +79,15 @@ export default function Dashboard() {
     setPatientsLoading(true);
     try {
       // Inefficient memory pagination called from client
-      const res = await fetch(`${API_BASE_URL}/patients?page=${page}&limit=5&search=${patientSearch}&gender=${patientGender}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: '5',
+        search: patientSearch,
+        gender: patientGender,
+      });
+      const res = await fetch(`${API_BASE_URL}/patients?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const data = await res.json();
       if (data.success) {
@@ -97,16 +107,17 @@ export default function Dashboard() {
 
   // Trigger Patient List Fetch (Every keystroke trigger re-renders parent! - Performance bug)
   useEffect(() => {
-    if (user.role === 'RECEPTIONIST' || user.role === 'ADMIN') {
+    if (user && (user.role === 'RECEPTIONIST' || user.role === 'ADMIN')) {
       fetchPatients(1);
     }
-  }, [patientSearch, patientGender]);
+  }, [patientSearch, patientGender, user]);
 
   // Fetch Doctors for booking drop-down
   const fetchDoctorsDropdown = async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/doctors`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const data = await res.json();
       setDoctorsList(data);
@@ -116,8 +127,10 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    fetchDoctorsDropdown();
-  }, []);
+    if (user) {
+      fetchDoctorsDropdown();
+    }
+  }, [user]);
 
   // Handle Patient Registration
   const handleRegisterPatient = async (e) => {
@@ -138,6 +151,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        credentials: 'include',
         body: JSON.stringify({
           name: regName,
           email: regEmail,
@@ -184,6 +198,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        credentials: 'include',
         body: JSON.stringify({
           patientId: bookingPatientId,
           doctorId: bookingDoctorId,
@@ -211,7 +226,8 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_BASE_URL}/patients/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const data = await res.json();
       if (res.ok) {
@@ -235,6 +251,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        credentials: 'include',
         body: JSON.stringify({ patientId, doctorId, appointmentId })
       });
       const data = await res.json();
@@ -261,7 +278,8 @@ export default function Dashboard() {
 
       // 1. Fetch appointments for this doctor (N+1 database queries triggers inside server)
       const appRes = await fetch(`${API_BASE_URL}/appointments?doctorId=${matchedDoc.id}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const appData = await appRes.json();
       if (appData.success) {
@@ -270,7 +288,8 @@ export default function Dashboard() {
 
       // 2. Fetch queue list for this doctor today
       const queueRes = await fetch(`${API_BASE_URL}/queue?doctorId=${matchedDoc.id}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const queueData = await queueRes.json();
       setDoctorQueue(queueData);
@@ -281,10 +300,12 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    if (user.role === 'DOCTOR' && doctorsList.length > 0) {
+    if (user?.role === 'DOCTOR' && doctorsList.length > 0) {
       fetchDoctorWorklist();
     }
-  }, [doctorsList]);
+  }, [doctorsList, user?.role]);
+
+  if (loading || !user) return null;
 
   // Update token status (WAITING -> CALLING -> COMPLETED / SKIPPED)
   const handleUpdateQueueStatus = async (tokenId, newStatus) => {
@@ -295,6 +316,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        credentials: 'include',
         body: JSON.stringify({ status: newStatus })
       });
       if (res.ok) {
@@ -314,6 +336,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        credentials: 'include',
         body: JSON.stringify({ status: 'COMPLETED' })
       });
       if (res.ok) {
@@ -334,7 +357,8 @@ export default function Dashboard() {
     try {
       // Calls slow nested aggregation endpoint
       const res = await fetch(`${API_BASE_URL}/reports/doctor-stats`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const data = await res.json();
       if (data.success) {
@@ -350,14 +374,16 @@ export default function Dashboard() {
   // Search Doctors (SQL Injection vulnerable API!)
   const searchPhysiciansAdmin = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/doctors?search=${adminSearchQuery}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const params = new URLSearchParams({ search: adminSearchQuery });
+      const res = await fetch(`${API_BASE_URL}/doctors?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        credentials: 'include'
       });
       const data = await res.json();
       if (Array.isArray(data)) {
         setDoctorsList(data);
       } else {
-        alert(`API Error: ${data.sqlMessage || data.error}`);
+        alert(`API Error: ${data.error || 'Unable to search physicians'}`);
       }
     } catch (e) {
       console.error(e);

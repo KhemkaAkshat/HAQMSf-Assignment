@@ -1,53 +1,60 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { authenticate } = require('../middleware/auth');
+const { asyncHandler } = require('../utils/errors');
+const { QUEUE_STATUSES, assertEnum, assertUuid, validateQueueCheckin, validateQueueStatus } = require('../utils/validation');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
 // GET /api/queue
 // List all active queue tokens
-router.get('/', authenticate, async (req, res) => {
-  try {
-    const { doctorId, status } = req.query;
+router.get('/', authenticate, asyncHandler(async (req, res) => {
+  const where = {};
+  if (req.query.doctorId) where.doctorId = assertUuid(req.query.doctorId, 'doctorId');
+  if (req.query.status) where.status = assertEnum(req.query.status, 'status', QUEUE_STATUSES);
 
-    const where = {};
-    if (doctorId) where.doctorId = doctorId;
-    if (status) where.status = status;
-
-    const tokens = await prisma.queueToken.findMany({
-      where,
-      include: {
-        patient: true,
-        doctor: true,
+  const tokens = await prisma.queueToken.findMany({
+    where,
+    include: {
+      patient: {
+        select: {
+          id: true,
+          name: true,
+          phoneNumber: true,
+          age: true,
+          gender: true,
+          medicalHistory: true,
+        },
       },
-      orderBy: { createdAt: 'asc' },
-    });
+      doctor: {
+        select: {
+          id: true,
+          name: true,
+          specialization: true,
+          department: true,
+        },
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
 
-    res.json(tokens);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve queue', details: error.message });
-  }
-});
+  res.json(tokens);
+}));
 
 // POST /api/queue/checkin
 // Generate a new queue token for a patient
 // CONCURRENCY/RACE CONDITION BUG: Token increment uses aggregate read followed by create.
 // Introduce a deliberate asynchronous delay (setTimeout) to force a wide race window
 // where concurrent check-ins assign the exact same token number.
-router.post('/checkin', authenticate, async (req, res) => {
-  try {
-    const { patientId, doctorId, appointmentId } = req.body;
+router.post('/checkin', authenticate, asyncHandler(async (req, res) => {
+  const { patientId, doctorId, appointmentId } = validateQueueCheckin(req.body);
 
-    if (!patientId || !doctorId) {
-      return res.status(400).json({ error: 'Patient and Doctor ID are required for check-in.' });
-    }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    // 1. Fetch current maximum token number for this doctor today
-    const maxTokenResult = await prisma.queueToken.aggregate({
+  const newToken = await prisma.$transaction(async (tx) => {
+    const maxTokenResult = await tx.queueToken.aggregate({
       where: {
         doctorId,
         createdAt: { gte: today },
@@ -60,13 +67,7 @@ router.post('/checkin', authenticate, async (req, res) => {
     const currentMax = maxTokenResult._max.tokenNumber || 0;
     const nextTokenNumber = currentMax + 1;
 
-    // PERFORMANCE/CONCURRENCY BUG: Artificial sleep to widen the race condition window.
-    // In production under microservices or high load, network delay does this naturally.
-    // Junior developer comment: "Adding sleep to make sure db registers the record correctly before moving forward"
-    await new Promise((resolve) => setTimeout(resolve, 350));
-
-    // 2. Insert new token
-    const newToken = await prisma.queueToken.create({
+    return tx.queueToken.create({
       data: {
         tokenNumber: nextTokenNumber,
         patientId,
@@ -75,44 +76,67 @@ router.post('/checkin', authenticate, async (req, res) => {
         status: 'WAITING',
       },
       include: {
-        patient: true,
-        doctor: true,
+        patient: {
+          select: {
+            id: true,
+            name: true,
+            phoneNumber: true,
+            age: true,
+            gender: true,
+            medicalHistory: true,
+          },
+        },
+        doctor: {
+          select: {
+            id: true,
+            name: true,
+            specialization: true,
+            department: true,
+          },
+        },
       },
     });
+  });
 
-    res.status(201).json({
-      message: 'Checked in successfully. Token generated.',
-      token: newToken,
-    });
-  } catch (error) {
-    console.error('Queue check-in error:', error);
-    res.status(500).json({ error: 'Check-in failed', details: error.message });
-  }
-});
+  res.status(201).json({
+    success: true,
+    message: 'Checked in successfully. Token generated.',
+    token: newToken,
+  });
+}));
 
 // PATCH /api/queue/:id
 // Update token status (WAITING -> CALLING -> COMPLETED / SKIPPED)
-router.patch('/:id', authenticate, async (req, res) => {
-  try {
-    const { status } = req.body;
+router.patch('/:id', authenticate, asyncHandler(async (req, res) => {
+  const id = assertUuid(req.params.id, 'id');
+  const { status } = validateQueueStatus(req.body);
 
-    if (!status) {
-      return res.status(400).json({ error: 'Status is required' });
-    }
-
-    const updatedToken = await prisma.queueToken.update({
-      where: { id: req.params.id },
-      data: { status },
-      include: {
-        patient: true,
-        doctor: true,
+  const updatedToken = await prisma.queueToken.update({
+    where: { id },
+    data: { status },
+    include: {
+      patient: {
+        select: {
+          id: true,
+          name: true,
+          phoneNumber: true,
+          age: true,
+          gender: true,
+          medicalHistory: true,
+        },
       },
-    });
+      doctor: {
+        select: {
+          id: true,
+          name: true,
+          specialization: true,
+          department: true,
+        },
+      },
+    },
+  });
 
-    res.json(updatedToken);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update queue token', details: error.message });
-  }
-});
+  res.json(updatedToken);
+}));
 
 module.exports = router;

@@ -1,27 +1,57 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'my-super-secret-secret-key-12345!!!';
+const getJwtSecret = () => {
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 32) {
+    return process.env.JWT_SECRET;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be configured with at least 32 characters');
+  }
+
+  if (!global.__HAQMS_DEV_JWT_SECRET__) {
+    global.__HAQMS_DEV_JWT_SECRET__ = crypto.randomBytes(48).toString('hex');
+    console.warn('[AUTH] JWT_SECRET missing; using a volatile development-only secret.');
+  }
+
+  return global.__HAQMS_DEV_JWT_SECRET__;
+};
+
+const getCookieValue = (cookieHeader, name) => {
+  if (!cookieHeader) return null;
+  const cookies = cookieHeader.split(';').map((cookie) => cookie.trim());
+  const match = cookies.find((cookie) => cookie.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.slice(name.length + 1)) : null;
+};
 
 // Authentication middleware
 const authenticate = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Access denied. No token provided.' });
+  const bearerToken = authHeader && authHeader.startsWith('Bearer ')
+    ? authHeader.split(' ')[1]
+    : null;
+  const usableBearerToken = bearerToken && !['null', 'undefined', ''].includes(bearerToken)
+    ? bearerToken
+    : null;
+  const token = usableBearerToken || getCookieValue(req.headers.cookie, 'haqms_token');
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Authentication required', code: 'UNAUTHORIZED' });
   }
 
-  const token = authHeader.split(' ')[1];
-
   try {
-    // SECURITY BUG: The verification is weak. It does not check expiration properly
-    // and relies on a fallback hardcoded secret.
-    const decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }); 
+    const decoded = jwt.verify(token, getJwtSecret(), {
+      algorithms: ['HS256'],
+      issuer: 'haqms-api',
+      audience: 'haqms-client',
+    });
     
     // Add user details to request object
     req.user = decoded;
     next();
   } catch (error) {
-    // IMPROPER ERROR HANDLING: Leaks full error details including secret key mismatches to the client
-    return res.status(401).json({ error: 'Invalid token.', details: error.message });
+    return res.status(401).json({ success: false, error: 'Invalid or expired token', code: 'INVALID_TOKEN' });
   }
 };
 
@@ -33,30 +63,25 @@ const authorize = (roles = []) => {
 
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({ error: 'Unauthorized. User context missing.' });
+      return res.status(401).json({ success: false, error: 'Authentication required', code: 'UNAUTHORIZED' });
     }
 
     // Role-based verification
     if (roles.length && !roles.includes(req.user.role)) {
-      return res.status(403).json({ error: `Forbidden. Requires role: ${roles.join(' or ')}` });
+      return res.status(403).json({ success: false, error: 'Insufficient role privileges', code: 'FORBIDDEN' });
     }
 
     next();
   };
 };
 
-// MISSING AUTHORIZATION CHECK: This middleware is meant for Admin actions but is empty
-// or fails to check the role, allowing any authenticated user (e.g. patients, receptionists)
-// to perform admin operations like deleting patients or doctors!
 const authorizeAdminOnlyLegacy = (req, res, next) => {
   if (!req.user) {
-    return res.status(401).json({ error: 'Unauthorized.' });
+    return res.status(401).json({ success: false, error: 'Authentication required', code: 'UNAUTHORIZED' });
   }
-  // TODO: Implement actual admin role verification here
-  // Junior developer commented it out because it was "causing issues during testing"
-  // if (req.user.role !== 'ADMIN') {
-  //   return res.status(403).json({ error: 'Access denied. Admin only.' });
-  // }
+  if (req.user.role !== 'ADMIN') {
+    return res.status(403).json({ success: false, error: 'Admin role required', code: 'FORBIDDEN' });
+  }
   next();
 };
 
@@ -64,4 +89,5 @@ module.exports = {
   authenticate,
   authorize,
   authorizeAdminOnlyLegacy,
+  getJwtSecret,
 };

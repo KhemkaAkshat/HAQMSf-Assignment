@@ -12,27 +12,30 @@ export const AuthProvider = ({ children }) => {
   const [error, setError] = useState(null);
   const router = useRouter();
 
-  // HARDCODED API VALUE: Intentionally hardcoding the backend base URL on the frontend!
-  // This violates production standards and prevents simple domain config, but serves as
-  // a perfect exercise for internship candidates to move to environment variables.
-  const API_BASE_URL = 'http://localhost:5000/api';
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5000/api';
 
   useEffect(() => {
-    // Check for stored token and user on initialization
-    const storedToken = localStorage.getItem('haqms_token');
-    const storedUser = localStorage.getItem('haqms_user');
-
-    if (storedToken && storedUser) {
+    const restoreSession = async () => {
       try {
-        setToken(storedToken);
-        setUser(JSON.parse(storedUser));
+        const response = await fetch(`${API_BASE_URL}/auth/me`, {
+          credentials: 'include',
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setUser(data.user);
+        }
       } catch (e) {
-        console.error('Failed to parse user details from localStorage', e);
-        logout();
+        console.error('Failed to restore authenticated session', e);
+      } finally {
+        setLoading(false);
       }
-    }
-    setLoading(false);
-  }, []);
+    };
+
+    localStorage.removeItem('haqms_token');
+    localStorage.removeItem('haqms_user');
+    restoreSession();
+  }, [API_BASE_URL]);
 
   const login = async (email, password) => {
     setLoading(true);
@@ -43,6 +46,7 @@ export const AuthProvider = ({ children }) => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({ email, password }),
       });
 
@@ -55,10 +59,6 @@ export const AuthProvider = ({ children }) => {
       // Inconsistent API returns nested success format for login
       const receivedToken = data.data.token;
       const receivedUser = data.data.user;
-
-      // SECURITY ISSUE: Storing sensitive auth credentials directly in LocalStorage!
-      localStorage.setItem('haqms_token', receivedToken);
-      localStorage.setItem('haqms_user', JSON.stringify(receivedUser));
 
       setToken(receivedToken);
       setUser(receivedUser);
@@ -83,6 +83,7 @@ export const AuthProvider = ({ children }) => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({ name, email, password, role }),
       });
 
@@ -105,8 +106,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
-    localStorage.removeItem('haqms_token');
-    localStorage.removeItem('haqms_user');
+    fetch(`${API_BASE_URL}/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    }).catch(() => {});
     setToken(null);
     setUser(null);
     router.push('/login');
